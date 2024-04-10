@@ -272,7 +272,21 @@ def train(hyp, opt, device, callbacks):
     labels = np.concatenate(dataset.labels, 0)
     mlc = int(labels[:, 0].max())  # max label class
     assert mlc < nc, f"Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}"
-
+    val_loader = create_dataloader(
+            val_path,
+            imgsz,
+            batch_size // WORLD_SIZE * 2,
+            gs,
+            single_cls,
+            hyp=hyp,
+            cache=None if noval else opt.cache,
+            rect=True,
+            rank=-1,
+            workers=workers * 2,
+            pad=0.5,
+            prefix=colorstr("val: "),
+        )
+    
     # Process 0
     if RANK in {-1, 0}:
         val_loader = create_dataloader(
@@ -409,6 +423,18 @@ def train(hyp, opt, device, callbacks):
                     % (f"{epoch}/{epochs - 1}", mem, *mloss, targets.shape[0], imgs.shape[-1])
                 )
                 callbacks.run("on_train_batch_end", model, ni, imgs, targets, paths, list(mloss))
+        if val_loader is not None:
+            model.eval()
+            val_loss = 0
+            for val_i, (val_imgs, val_targets, _, _) in enumerate(val_loader):
+                with torch.no_grad():
+                    val_imgs = val_imgs.to(device, non_blocking=True).float() / 255
+                    val_targets = val_targets.to(device, non_blocking=True)
+                    val_pred = model(val_imgs)
+                    val_loss += compute_loss(val_pred, val_targets).item()  # Accumulate validation loss
+
+            val_loss /= len(val_loader)  # Average validation loss
+            print(f"Validation Loss: {val_loss:.4f}")
                 if callbacks.stop_training:
                     return
             # end batch ------------------------------------------------------------------------------------------------
